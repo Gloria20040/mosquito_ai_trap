@@ -1,0 +1,6 @@
+__pycache__/
+venv/
+*.keras
+*.mp3
+*.wav
+.env

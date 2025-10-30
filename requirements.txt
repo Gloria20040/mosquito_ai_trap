@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+jinja2
+tensorflow
+librosa
+numpy
+requests
+python-multipart
