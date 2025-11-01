@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mosquito Acoustic Classifier</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f7f7f7; }
+        .result-box { transition: all 0.3s ease-in-out; }
+        @keyframes pulse-mic {
+            0%, 100% { height: 25%; }
+            50% { height: 80%; }
+        }
+        .mic-bar { animation-name: pulse-mic; animation-duration: 0.5s; animation-timing-function: ease-in-out; animation-iteration-count: infinite; }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+    <div id="app" class="w-full max-w-lg bg-white shadow-xl rounded-2xl p-6 md:p-8">
+        <h1 class="text-3xl font-extrabold text-gray-800 text-center mb-2">Mosquito Classifier</h1>
+        <p class="text-center text-sm text-gray-500 mb-6">
+            Record a clip or upload an audio file and analyze for a <span class="font-semibold text-red-600">malaria vector</span>.
+        </p>
+        
+        <div id="status-display" class="h-16 flex items-center justify-center mb-6 bg-gray-100 rounded-lg border-2 border-dashed border-gray-300 relative overflow-hidden">
+            <p id="message" class="text-gray-600 font-medium z-10">Ready to record or upload.</p>
+            <div id="visualizer" class="hidden h-full w-full absolute inset-0 flex items-center justify-center space-x-1">
+                <div class="mic-bar bg-red-500 w-1 rounded-full" style="animation-delay: 0s;"></div>
+                <div class="mic-bar bg-red-500 w-1 rounded-full" style="animation-delay: 0.1s;"></div>
+                <div class="mic-bar bg-red-500 w-1 rounded-full" style="animation-delay: 0.2s;"></div>
+                <div class="mic-bar bg-red-500 w-1 rounded-full" style="animation-delay: 0.3s;"></div>
+                <div class="mic-bar bg-red-500 w-1 rounded-full" style="animation-delay: 0.4s;"></div>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        
+        <div class="flex flex-col space-y-4">
+            <button id="record-btn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-xl shadow-lg shadow-green-300/50 transition duration-300 ease-in-out transform hover:scale-[1.01] focus:outline-none focus:ring-4 focus:ring-green-500/50" disabled>
+                Start Recording
+            </button>
+            <button id="stop-btn" class="hidden bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-xl shadow-lg shadow-red-300/50 transition duration-300 ease-in-out focus:outline-none focus:ring-4 focus:ring-red-500/50">
+                Stop Recording
+            </button>
+
+            <!-- Upload -->
+            <label class="block text-gray-700 font-medium mb-2">Or upload an audio file:</label>
+            <input type="file" id="audio-upload" accept="audio/*" class="mb-4">
+
+            <!-- Analyze -->
+            <button id="analyze-btn" class="bg-gray-700 hover:bg-gray-800 text-white font-bold py-3 px-4 rounded-xl shadow transition duration-300 ease-in-out focus:outline-none focus:ring-4 focus:ring-gray-700/50">
+                Analyze Clip
+            </button>
+        </div>
+
+        <!-- Prediction Result Area -->
+        <div id="result-area" class="mt-8 pt-4 border-t border-gray-200 hidden">
+            <h3 class="text-lg font-bold text-gray-700 mb-3">Analysis Result:</h3>
+            <div id="prediction-card" class="result-box p-4 rounded-xl shadow-md bg-white border border-gray-300">
+                <p id="prediction-species" class="text-2xl font-extrabold text-gray-900"></p>
+                <p id="prediction-confidence" class="text-sm text-gray-600 mt-1"></p>
+                <div id="score-container" class="mt-4 space-y-2"></div>
+            </div>
+        </div>
+
+        <!-- Error Modal -->
+        <div id="custom-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 z-50 hidden flex items-center justify-center p-4">
+            <div class="bg-white p-6 rounded-xl shadow-2xl w-full max-w-sm">
+                <h4 id="modal-title" class="text-xl font-bold text-red-600 mb-3">Error</h4>
+                <p id="modal-content" class="text-gray-700 mb-4"></p>
+                <button onclick="document.getElementById('custom-modal').classList.add('hidden')" class="w-full bg-blue-600 text-white py-2 rounded-lg font-semibold hover:bg-blue-700 transition">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // DOM Elements
+        const recordBtn = document.getElementById('record-btn');
+        const stopBtn = document.getElementById('stop-btn');
+        const analyzeBtn = document.getElementById('analyze-btn');
+        const fileInput = document.getElementById('audio-upload');
+        const message = document.getElementById('message');
+        const visualizer = document.getElementById('visualizer');
+        const resultArea = document.getElementById('result-area');
+        const predictionSpecies = document.getElementById('prediction-species');
+        const predictionConfidence = document.getElementById('prediction-confidence');
+        const scoreContainer = document.getElementById('score-container');
+
+        // State
+        let mediaRecorder;
+        let audioChunks = [];
+        let recordedAudioBlob = null;
+        let uploadedAudioFile = null;
+        let stream;
+
+        function showModal(title, content, isError=true) {
+            document.getElementById('modal-title').textContent = title;
+            document.getElementById('modal-content').textContent = content;
+            document.getElementById('modal-title').classList.toggle('text-red-600', isError);
+            document.getElementById('custom-modal').classList.remove('hidden');
+        }
+
+        function blobToBase64(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result.split(',')[1]);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
+        }
+
+        async function initializeMicrophone() {
+            try {
+                message.textContent = 'Awaiting microphone access...';
+                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm; codecs=opus' });
+                mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+                mediaRecorder.onstop = handleRecordingStopped;
+                recordBtn.disabled = false;
+                message.textContent = 'Microphone ready. Tap to record.';
+            } catch(err) {
+                console.error(err);
+                showModal('Permission Denied', 'Microphone access is required.', true);
+                recordBtn.disabled = true;
+            }
+        }
+
+        function startRecording() {
+            if (!mediaRecorder || mediaRecorder.state === 'recording') return;
+            audioChunks = [];
+            recordedAudioBlob = null;
+            resultArea.classList.add('hidden');
+            mediaRecorder.start();
+            recordBtn.classList.add('hidden');
+            stopBtn.classList.remove('hidden');
+            visualizer.classList.remove('hidden');
+            message.textContent = 'Recording... Press STOP when finished.';
+            uploadedAudioFile = null; // reset uploaded file if recording
+            fileInput.value = '';
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+        }
+
+        function handleRecordingStopped() {
+            recordedAudioBlob = new Blob(audioChunks, { type: 'audio/webm; codecs=opus' });
+            stopBtn.classList.add('hidden');
+            visualizer.classList.add('hidden');
+            recordBtn.classList.remove('hidden');
+            message.textContent = 'Recording complete. Ready to analyze.';
+        }
+
+        fileInput.addEventListener('change', (event) => {
+            if (event.target.files.length > 0) {
+                uploadedAudioFile = event.target.files[0];
+                message.textContent = `Uploaded: ${uploadedAudioFile.name}. Ready to analyze.`;
+                recordedAudioBlob = null;
+            }
+        });
+
+        async function sendAudioForPrediction() {
+            let blobToSend;
+            if (recordedAudioBlob) blobToSend = recordedAudioBlob;
+            else if (uploadedAudioFile) blobToSend = uploadedAudioFile;
+            else { showModal('Error', 'No audio data available for analysis.', true); return; }
+
+            try {
+                message.textContent = 'Sending for analysis...';
+                const base64Audio = await blobToBase64(blobToSend);
+                const response = await fetch('/predict', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ audio_base64: base64Audio })
+                });
+                const data = await response.json();
+                if (data.error) showModal('Prediction Error', data.error, true);
+                else displayPrediction(data.prediction);
+            } catch(err) {
+                console.error(err);
+                showModal('Connection Error', 'Could not connect to server.', true);
+            } finally {
+                message.textContent = 'Analysis complete. Ready for a new recording or upload.';
+                uploadedAudioFile = null;
+                fileInput.value = '';
+            }
+        }
+
+        function displayPrediction(prediction) {
+            const species = prediction.species;
+            const confidence = (prediction.probability*100).toFixed(2);
+            const allScores = prediction.all_scores;
+
+            predictionSpecies.textContent = species.replace(/_/g, ' ').toUpperCase();
+            predictionConfidence.textContent = `Confidence: ${confidence}%`;
+            scoreContainer.innerHTML = '';
+
+            if (species === 'malaria_vector') {
+                predictionSpecies.classList.add('text-red-600'); 
+                predictionSpecies.classList.remove('text-gray-900');
+                document.getElementById('prediction-card').classList.add('bg-red-50', 'border-red-400');
+                document.getElementById('prediction-card').classList.remove('bg-white', 'border-gray-300', 'bg-green-50', 'border-green-400');
+            } else {
+                predictionSpecies.classList.remove('text-red-600'); 
+                predictionSpecies.classList.add('text-gray-900');
+                document.getElementById('prediction-card').classList.add('bg-green-50', 'border-green-400');
+                document.getElementById('prediction-card').classList.remove('bg-white', 'border-gray-300', 'bg-red-50', 'border-red-400');
+            }
+
+            for (const [label, score] of Object.entries(allScores)) {
+                const barWidth = `${(score*100).toFixed(2)}%`;
+                const item = document.createElement('div');
+                item.className = 'flex flex-col';
+                item.innerHTML = `
+                    <div class="flex justify-between text-xs font-medium text-gray-700">
+                        <span>${label.replace(/_/g,' ').toUpperCase()}</span>
+                        <span>${(score*100).toFixed(2)}%</span>
+                    </div>
+                    <div class="w-full bg-gray-200 rounded-full h-2.5 mt-1">
+                        <div class="h-2.5 rounded-full ${label===species?'bg-red-500':'bg-blue-400'}" style="width:${barWidth}"></div>
+                    </div>
+                `;
+                scoreContainer.appendChild(item);
+            }
+            resultArea.classList.remove('hidden');
+        }
+
+        recordBtn.addEventListener('click', startRecording);
+        stopBtn.addEventListener('click', stopRecording);
+        analyzeBtn.addEventListener('click', sendAudioForPrediction);
+
+        window.onload = initializeMicrophone;
+    </script>
+</body>
+</html>

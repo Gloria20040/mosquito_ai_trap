@@ -1,8 +1,7 @@
 fastapi
 uvicorn
-jinja2
 tensorflow
-librosa
+pydub
 numpy
+jinja2
 requests
-python-multipart

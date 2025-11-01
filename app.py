@@ -6,49 +6,33 @@ import base64
 import numpy as np
 import librosa
 import os
-import requests
 from tensorflow.keras.models import load_model
 
-# --- Model Configuration ---
-MODEL_PATH = "best_microacdnet.keras"
-MODEL_URL = "https://huggingface.co/YOUR_USERNAME/YOUR_REPO/resolve/main/best_microacdnet.keras"
-TARGET_SHAPE = (51, 40, 1)
+MODEL_PATH = "best_microacdnet1.keras"
+TARGET_SHAPE = (51, 40, 1)  # match your training input
 ALLOWED_EXTENSIONS = {"wav", "mp3", "ogg", "webm"}
 
 app = FastAPI()
 model = None
 
-# --- Serve static files ---
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-
-def download_model():
-    """Download model from Hugging Face if not found locally."""
-    if not os.path.exists(MODEL_PATH):
-        print("Downloading model from Hugging Face...")
-        r = requests.get(MODEL_URL)
-        with open(MODEL_PATH, "wb") as f:
-            f.write(r.content)
-        print("✅ Model downloaded successfully!")
-
-
 @app.on_event("startup")
 def load_model_on_startup():
     global model
-    download_model()
+    if not os.path.exists(MODEL_PATH):
+        raise FileNotFoundError(f"{MODEL_PATH} not found")
     model = load_model(MODEL_PATH)
-    print("✅ Model loaded and ready.")
+    print("Model loaded successfully.")
 
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
-    with open("static/index.html", "r", encoding="utf-8") as f:
+    with open("index.html", "r", encoding="utf-8") as f:
         html = f.read()
     return HTMLResponse(content=html)
 
 
 def preprocess_audio_file(file_path: str):
-    """Load audio, compute Mel-spectrogram, normalize, pad/truncate."""
+    """Load audio, compute Mel-spectrogram, normalize, pad/truncate to TARGET_SHAPE"""
     y, sr = librosa.load(file_path, sr=8000, mono=True, duration=1.0)
     mel = librosa.feature.melspectrogram(y=y, sr=sr, n_fft=512, hop_length=160, n_mels=40)
     mel_db = librosa.power_to_db(mel, ref=np.max)
@@ -56,10 +40,10 @@ def preprocess_audio_file(file_path: str):
 
     # Pad/Truncate to target frames
     if mel_norm.shape[0] < TARGET_SHAPE[0]:
-        mel_norm = np.pad(mel_norm, ((0, TARGET_SHAPE[0] - mel_norm.shape[0]), (0, 0)), "constant")
+        mel_norm = np.pad(mel_norm, ((0, TARGET_SHAPE[0]-mel_norm.shape[0]), (0,0)), "constant")
     elif mel_norm.shape[0] > TARGET_SHAPE[0]:
         mel_norm = mel_norm[:TARGET_SHAPE[0], :]
-    return mel_norm[np.newaxis, ..., np.newaxis]
+    return mel_norm[np.newaxis, ..., np.newaxis]  # shape (1,51,40,1)
 
 
 def preprocess_audio_from_base64(b64_audio: str):
