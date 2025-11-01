@@ -1,93 +1,139 @@
 from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import base64
 import numpy as np
 import librosa
 import os
 from tensorflow.keras.models import load_model
+from huggingface_hub import hf_hub_download
+from huggingface_hub.utils import HfHubHTTPError
 
-MODEL_PATH = "best_microacdnet1.keras"
-TARGET_SHAPE = (51, 40, 1)  # match your training input
-ALLOWED_EXTENSIONS = {"wav", "mp3", "ogg", "webm"}
-
+# ✅ Initialize the FastAPI app
 app = FastAPI()
+
+# ✅ CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Hugging Face Configuration ---
+REPO_ID = "Gloria004/trap-mosquito"
+FILENAME = "best_microacdnet1.keras"
+HF_TOKEN_ENV_VAR = "MOSQUITO_HF_TOKEN"
+
+MODEL_PATH = None
+TARGET_SHAPE = (51, 40, 1)
+ALLOWED_EXTENSIONS = {"wav", "mp3", "ogg", "webm"}
 model = None
 
+# ✅ Optional static mount for JS/CSS if needed
+# app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# ✅ Serve index.html directly
+@app.get("/", response_class=HTMLResponse)
+async def serve_homepage():
+    with open("index.html", "r", encoding="utf-8") as f:
+        html_content = f.read()
+    return HTMLResponse(content=html_content, status_code=200)
+
+# ========== Startup ==========
 @app.on_event("startup")
 def load_model_on_startup():
-    global model
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(f"{MODEL_PATH} not found")
-    model = load_model(MODEL_PATH)
-    print("Model loaded successfully.")
+    """Downloads and loads model from Hugging Face Hub."""
+    global model, MODEL_PATH
+    hf_token = os.environ.get(HF_TOKEN_ENV_VAR)
 
+    print(f"Attempting to download {FILENAME} from {REPO_ID}...")
+    try:
+        MODEL_PATH = hf_hub_download(repo_id=REPO_ID, filename=FILENAME, token=hf_token)
+        model = load_model(MODEL_PATH)
+        print("✅ Model loaded successfully.")
+    except HfHubHTTPError as e:
+        raise RuntimeError("❌ Could not access Hugging Face repository.") from e
+    except Exception as e:
+        raise RuntimeError(f"❌ Model loading error: {e}")
 
-@app.get("/", response_class=HTMLResponse)
-async def serve_frontend():
-    with open("index.html", "r", encoding="utf-8") as f:
-        html = f.read()
-    return HTMLResponse(content=html)
-
-
+# ========== Prediction Helpers ==========
 def preprocess_audio_file(file_path: str):
-    """Load audio, compute Mel-spectrogram, normalize, pad/truncate to TARGET_SHAPE"""
     y, sr = librosa.load(file_path, sr=8000, mono=True, duration=1.0)
     mel = librosa.feature.melspectrogram(y=y, sr=sr, n_fft=512, hop_length=160, n_mels=40)
     mel_db = librosa.power_to_db(mel, ref=np.max)
     mel_norm = ((mel_db - mel_db.min()) / (mel_db.max() - mel_db.min() + 1e-6)).T
 
-    # Pad/Truncate to target frames
     if mel_norm.shape[0] < TARGET_SHAPE[0]:
         mel_norm = np.pad(mel_norm, ((0, TARGET_SHAPE[0]-mel_norm.shape[0]), (0,0)), "constant")
     elif mel_norm.shape[0] > TARGET_SHAPE[0]:
         mel_norm = mel_norm[:TARGET_SHAPE[0], :]
-    return mel_norm[np.newaxis, ..., np.newaxis]  # shape (1,51,40,1)
-
+        
+    return mel_norm[np.newaxis, ..., np.newaxis]
 
 def preprocess_audio_from_base64(b64_audio: str):
     tmp_path = "temp_audio.webm"
-    audio_data = base64.b64decode(b64_audio)
     with open(tmp_path, "wb") as f:
-        f.write(audio_data)
+        f.write(base64.b64decode(b64_audio))
     tensor = preprocess_audio_file(tmp_path)
     os.remove(tmp_path)
     return tensor
 
+def run_prediction(input_tensor):
+    preds = model.predict(input_tensor)
+    labels = ["non_vector", "malaria_vector"]
+    idx = np.argmax(preds[0])
+    return {"prediction": {
+        "species": labels[idx],
+        "probability": float(preds[0][idx]),
+        "all_scores": {l: float(p) for l, p in zip(labels, preds[0])}
+    }}
 
-@app.post("/predict")
-async def predict(request: Request, audio_file: UploadFile = File(None)):
+# ========== API Endpoints ==========
+@app.post("/predict/file")
+async def predict_file(audio_file: UploadFile = File(...)):
+    if model is None:
+        return JSONResponse(status_code=503, content={"error": "Model not loaded."})
+
     try:
-        # Determine input source
-        if audio_file:
-            ext = audio_file.filename.split(".")[-1].lower()
-            if ext not in ALLOWED_EXTENSIONS:
-                return JSONResponse(status_code=400, content={"error": f"Unsupported file type: {ext}"})
-            tmp_path = f"temp_upload.{ext}"
-            with open(tmp_path, "wb") as f:
-                f.write(await audio_file.read())
-            input_tensor = preprocess_audio_file(tmp_path)
-            os.remove(tmp_path)
-        else:
-            data = await request.json()
-            if "audio_base64" not in data:
-                return JSONResponse(status_code=400, content={"error": "No audio file or base64 data provided"})
-            input_tensor = preprocess_audio_from_base64(data["audio_base64"])
+        ext = audio_file.filename.split(".")[-1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            return JSONResponse(status_code=400, content={"error": f"Unsupported file type: {ext}"})
+        
+        tmp_path = f"temp_upload.{ext}"
+        content = await audio_file.read()
+        if not content:
+            return JSONResponse(status_code=400, content={"error": "Uploaded file is empty."})
 
-        # Predict
-        preds = model.predict(input_tensor)
-        idx = np.argmax(preds[0])
-        labels = ["non_vector", "malaria_vector"]
-        return {"prediction": {
-            "species": labels[idx],
-            "probability": float(preds[0][idx]),
-            "all_scores": {l: float(p) for l, p in zip(labels, preds[0])}
-        }}
+        with open(tmp_path, "wb") as f:
+            f.write(content)
+            
+        input_tensor = preprocess_audio_file(tmp_path)
+        os.remove(tmp_path)
+        return run_prediction(input_tensor)
 
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": f"Prediction failed: {str(e)}"})
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
+@app.post("/predict/base64")
+async def predict_base64(request: Request):
+    if model is None:
+        return JSONResponse(status_code=503, content={"error": "Model not loaded."})
 
+    try:
+        data = await request.json()
+        if "audio_base64" not in data:
+            return JSONResponse(status_code=400, content={"error": "Missing 'audio_base64' field"})
+            
+        input_tensor = preprocess_audio_from_base64(data["audio_base64"])
+        return run_prediction(input_tensor)
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+# ========== Run Server ==========
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=5000)
