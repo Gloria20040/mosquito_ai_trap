@@ -8,8 +8,14 @@ import librosa
 import os
 from tensorflow.keras.models import load_model
 
+<<<<<<< HEAD
 MODEL_PATH = "best_microacdnet1.keras"
 TARGET_SHAPE = (51, 40, 1)  # match your training input
+=======
+# --- Model Configuration ---
+MODEL_URL = "Gloria004/AI-Smart-Mosquito-Trap"
+TARGET_SHAPE = (51, 40, 1)
+>>>>>>> 5c5df98589dfe125795d8d344b4490a73d3cd372
 ALLOWED_EXTENSIONS = {"wav", "mp3", "ogg", "webm"}
 
 app = FastAPI()
