@@ -1,3 +1,8 @@
+import os
+
+# ----------------- FORCE TF TO SKIP XLA (SPEEDUP STARTUP) -----------------
+os.environ["TF_XLA_FLAGS"] = "--tf_xla_enable_xla_devices=false"
+
 from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -6,7 +11,6 @@ import uvicorn
 import base64
 import numpy as np
 import librosa
-import os
 from tensorflow.keras.models import load_model
 from huggingface_hub import hf_hub_download
 from huggingface_hub.utils import HfHubHTTPError
@@ -24,7 +28,6 @@ app.add_middleware(
 )
 
 # ----------------- Static Files -----------------
-# Serve JS/CSS and index.html from static
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/", response_class=HTMLResponse)
