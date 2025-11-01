@@ -10,8 +10,7 @@ import requests
 from tensorflow.keras.models import load_model
 
 # --- Model Configuration ---
-MODEL_PATH = "best_microacdnet.keras"
-MODEL_URL = "https://huggingface.co/YOUR_USERNAME/YOUR_REPO/resolve/main/best_microacdnet.keras"
+MODEL_URL = "Gloria004/AI-Smart-Mosquito-Trap"
 TARGET_SHAPE = (51, 40, 1)
 ALLOWED_EXTENSIONS = {"wav", "mp3", "ogg", "webm"}
 
